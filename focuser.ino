@@ -1,7 +1,12 @@
+//#define DEBUG
 #define USEDHT22
 
 #include <Arduino.h>
 #include <AccelStepper.h>
+
+#ifdef DEBUG
+#include <SoftwareSerial.h>
+#endif
 
 #ifdef USEDHT22
 
@@ -19,10 +24,14 @@
 #define SPEED20 long(16)
 #define MAXSPEED float(SPEED02)
 
-#define MAXCOMMAND 8
+#define MAXCOMMAND 16
 
 #define CMD_START ':'
 #define CMD_END '#'
+
+#ifdef DEBUG
+SoftwareSerial debug(2, 3); // RX, TX
+#endif
 
 bool commandReady(false);
 char inChar;
@@ -39,27 +48,38 @@ char line[MAXCOMMAND];
 
 char tempString[10];
 
-AccelStepper stepper(AccelStepper::HALF4WIRE, 4, 6, 5, 7, true);
+AccelStepper stepper(AccelStepper::FULL4WIRE, 4, 6, 5, 7, true);
 
 #ifdef USEDHT22
 DHT dht(DHTPIN, DHTTYPE);
 #endif
 
-long millisLastMove = 0;
-
 float temperature;
-long millisLastTempCheck = 0;
+long millisLastTempCheck = millis();
 
 void setup()
 {
   Serial.begin(9600);
+  while (!Serial) {
+    ;
+  }
+
+#ifdef DEBUG
+  debug.begin(9600);
+  debug.println("debugger active");
+#endif
+
+#ifdef USEDHT22
   dht.begin();
+#endif
 
   speed = (long)MAXSPEED;
 
-  stepper.setSpeed(float(MAXSPEED));
-  stepper.setMaxSpeed(float(MAXSPEED));
-  stepper.setAcceleration(float(64));
+  stepper.setMaxSpeed(float(speed));
+  stepper.setAcceleration(float(speed));
+  stepper.setCurrentPosition(-20000);
+  stepper.enableOutputs();
+  isRunning = 1;
 
 #ifdef USEDHT22
   temperature = dht.readTemperature();
@@ -68,80 +88,82 @@ void setup()
 #endif
 }
 
-void loop()
+void debugWrite(char * str)
 {
-#ifdef USEDHT22
-  // reading the temperature is expensive.
-  // don't do it if we are current moving to prevent jitter.
-  if (!isRunning && (millis() - millisLastTempCheck) > 10000)
-  {
-    float raw = dht.readTemperature();
-    if (!isnan(raw))
-    {
-      temperature = raw;
-    }
-    millisLastTempCheck = millis();
-  }
+#ifdef DEBUG
+  debug.println(str);
 #endif
-  
-  
-  read();
+}
 
-  if (commandReady)
-  {
+void write(char * str)
+{
+#ifdef DEBUG
+  debug.print("response - ");
+  debug.print(str);
+  debug.println("");
+#endif
+
+  Serial.print(str);
+}
+
+void handleCommand()
+{
+    debugWrite(cmd);
+
     if (strncmp(cmd, "ID", 2) == 0)
     {
-      Serial.print("DEVID=moonlite#");
+      write("DEVID=moonlite#");
+    }
+    else if (strncmp(cmd, "C", 1) == 0)
+    {
+      // Do nothing.
     }
     else if (strncmp(cmd, "PH", 2) == 0)
     {
       // Find home for Motor.
       stepper.moveTo(0);
       isRunning = 1;
+      stepper.run();
     }
     else if (strncmp(cmd, "FG", 2) == 0)
     {
       // Go to the new position as set by the ":SNYYYY#" command.
-      stepper.enableOutputs();
       isRunning = 1;
     }
     else if (strncmp(cmd, "FQ", 2) == 0)
     {
       // Immediately stop any focus motor movement.
-      stepper.moveTo(stepper.currentPosition());
-      stepper.run();
-      isRunning = 0;
       stepper.stop();
     }
     else if (strncmp(cmd, "GC", 2) == 0)
     {
-      Serial.print("02#");
+      write("02#");
     }
     else if (strncmp(cmd, "GB", 2) == 0)
     {
-      Serial.print("00#"); // Full Stepped
+      write("00#"); // Full Stepped
     }
     else if (strncmp(cmd, "GH", 2) == 0)
     {
-      Serial.print("00#"); // Full Stepped
+      write("00#"); // Full Stepped
     }
     else if (strncmp(cmd, "GT", 2) == 0)
     {
       char output[5];
 
       sprintf(output, "%04X", (long)(temperature * 2));
-      Serial.print(output);
-      Serial.print("#");
+      write(output);
+      write("#");
     }
     else if (strncmp(cmd, "GI", 2) == 0)
     {
-      if (stepper.distanceToGo() != 0)
+      if (isRunning)
       {
-        Serial.print("01#");
+        write("01#");
       }
       else
       {
-        Serial.print("00#");
+        write("00#");
       }
     }
     else if (strncmp(cmd, "GN", 2) == 0)
@@ -150,8 +172,8 @@ void loop()
       pos = -stepper.targetPosition();
       memset(tempString, 0, 10);
       sprintf(tempString, "%04X", pos);
-      Serial.print(tempString);
-      Serial.print("#");
+      write(tempString);
+      write("#");
     }
     else if (strncmp(cmd, "GP", 2) == 0)
     {
@@ -159,12 +181,12 @@ void loop()
       memset(tempString, 0, 10);
       pos = -stepper.currentPosition();
       sprintf(tempString, "%04X", pos);
-      Serial.print(tempString);
-      Serial.print("#");
+      write(tempString);
+      write("#");
     }
     else if (strncmp(cmd, "GV", 2) == 0)
     {
-      Serial.print("10#"); // Firmware version
+      write("10"); // Firmware version
     }
     else if (strncmp(cmd, "SN", 2) == 0)
     {
@@ -207,49 +229,67 @@ void loop()
     {
       if (speed == SPEED02)
       {
-        Serial.print("02#");
+        write("02#");
       }
       else if (speed == SPEED04)
       {
-        Serial.print("04#");
+        write("04#");
       }
       else if (speed == SPEED08)
       {
-        Serial.print("08#");
+        write("08#");
       }
       else if (speed == SPEED10)
       {
-        Serial.print("10#");
+        write("10#");
       }
       else if (speed == SPEED20)
       {
-        Serial.print("20#");
+        write("20#");
       }
     }
+}
 
+void checkTemp()
+{
+#ifdef USEDHT22
+  // reading the temperature is expensive.
+  // don't do it if we are current moving to prevent jitter.
+  if (!isRunning && (millis() - millisLastTempCheck) > 10000)
+  {
+    debugWrite("checking temp");
+
+    float raw = dht.readTemperature();
+    if (!isnan(raw))
+    {
+      temperature = raw;
+    }
+    millisLastTempCheck = millis();
+  }
+#endif
+}
+
+void loop()
+{
+  checkTemp();
+
+  read();
+
+  if (commandReady)
+  {
+    handleCommand();
     resetCommand();
   }
 
   if (isRunning)
   {
     stepper.run();
-    millisLastMove = millis();
-  }
-  else
-  {
-    // reported on INDI forum that some steppers "stutter" if disableOutputs is done repeatedly
-    // over a short interval; hence we only disable the outputs and release the motor some seconds
-    // after movement has stopped
-    if ((millis() - millisLastMove) > 15000)
-    {
-      stepper.disableOutputs();
-    }
-  }
 
-  if (stepper.distanceToGo() == 0)
-  {
-    stepper.run();
-    isRunning = 0;
+    if (stepper.distanceToGo() == 0)
+    {
+      stepper.run();
+      isRunning = 0;
+    }
   }
 }
 
@@ -258,13 +298,10 @@ void read()
   while (Serial.available() && !commandReady)
   {
     inChar = Serial.read();
-    if (inChar != '#' && inChar != ':' && inChar != '\r' && inChar != '\n')
+
+    if (inChar == ':')
     {
-      line[idx++] = inChar;
-      if (idx >= MAXCOMMAND)
-      {
-        idx = MAXCOMMAND - 1;
-      }
+      resetCommand();
     }
     else if (inChar == '#')
     {
@@ -279,11 +316,19 @@ void read()
       {
         strncpy(cmd, line, 2);
       }
+      else
+      {
+        strncpy(cmd, line, len);
+      }
 
       if (len > 2)
       {
         strncpy(param, line + 2, len - 2);
       }
+    }
+    else
+    {
+      line[idx++] = inChar;
     }
   } // end while Serial.available()
 }
@@ -291,6 +336,8 @@ void read()
 void resetCommand()
 {
   memset(line, 0, MAXCOMMAND);
+  memset(cmd, 0, MAXCOMMAND);
+  memset(param, 0, MAXCOMMAND);
   commandReady = false;
   idx = 0;
 }
